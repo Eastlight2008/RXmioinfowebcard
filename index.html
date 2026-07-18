@@ -427,7 +427,6 @@
     const $grid      = document.getElementById('grid');
     const $countdown = document.getElementById('countdown');
 
-    let refreshTimer   = null;
     let countdownTimer = null;
     let countdownValue = REFRESH_INTERVAL;
 
@@ -662,13 +661,11 @@
     function startCountdown() {
         countdownValue = REFRESH_INTERVAL;
         if ($countdown) $countdown.textContent = countdownValue;
-
         clearInterval(countdownTimer);
         countdownTimer = setInterval(() => {
             countdownValue--;
             if (countdownValue <= 0) countdownValue = REFRESH_INTERVAL;
             if ($countdown) $countdown.textContent = countdownValue;
-            // Also update error page retry countdown if visible
             const retry = document.getElementById('retryCountdown');
             if (retry) retry.textContent = countdownValue;
         }, 1000);
@@ -688,11 +685,9 @@
     // ── Init ────────────────────────────────────────────────
 
     async function init() {
-        loadBackground();  // non-blocking, errors are non-fatal
+        loadBackground();
         await refresh();
-
-        // Set up auto-refresh
-        refreshTimer = setInterval(refresh, REFRESH_INTERVAL * 1000);
+        setInterval(refresh, REFRESH_INTERVAL * 1000);
     }
 
     init();
