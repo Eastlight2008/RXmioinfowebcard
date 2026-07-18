@@ -1,0 +1,7 @@
+# Cloudflare Pages config
+name = "server-status-page"
+compatibility_date = "2025-07-01"
+compatibility_flags = ["nodejs_compat"]
+
+# Pages Functions
+pages_build_output_dir = "."
