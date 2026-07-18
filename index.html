@@ -479,7 +479,24 @@
         }
     }
 
-    // ── A2S Query ───────────────────────────────────────────
+    // ── A2S Query (via Cloudflare Function proxy) ───────────
+
+    /** Measure real latency from browser to game server (TCP handshake RTT) */
+    async function pingServer(ip, port) {
+        const start = performance.now();
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), 3000);
+        try {
+            await fetch(`http://${ip}:${port}/`, {
+                mode: 'no-cors',
+                signal: ctrl.signal,
+            });
+        } catch (_) {
+            // Expected — game server won't speak HTTP, but TCP handshake already happened
+        }
+        clearTimeout(timer);
+        return Math.round(performance.now() - start);
+    }
 
     async function queryA2S(ip, port) {
         const key = `${ip}:${port}`;
@@ -501,8 +518,10 @@
     }
 
     function updateA2SRow(row, data) {
-        const playersEl = row.querySelector('.a2s-value:first-of-type');
-        const latencyEl = row.querySelector('.a2s-value:last-of-type');
+        const cells = row.querySelectorAll('.a2s-value');
+        if (cells.length < 2) return;
+        const playersEl = cells[0];
+        const latencyEl = cells[1];
 
         if (data.error) {
             playersEl.className = 'a2s-value a2s-error';
@@ -534,8 +553,23 @@
             const port = parseInt(portStr, 10);
             if (!ip || !port) continue;
 
+            // Fetch player count from API
             const data = await queryA2S(ip, port);
             updateA2SRow(row, data);
+
+            // Override latency with real local ping (fire-and-forget per server)
+            if (!data.error) {
+                pingServer(ip, port).then(ms => {
+                    const cells = row.querySelectorAll('.a2s-value');
+                    if (cells.length < 2) return;
+                    const latencyEl = cells[1];
+                    latencyEl.textContent = `${ms}ms`;
+                    latencyEl.className = 'a2s-value';
+                    if (ms < 60)       latencyEl.classList.add('a2s-latency-good');
+                    else if (ms < 120) latencyEl.classList.add('a2s-latency-ok');
+                    else               latencyEl.classList.add('a2s-latency-bad');
+                });
+            }
         }
     }
 
@@ -632,7 +666,8 @@
         }
 
         $grid.innerHTML = html;
-        queryAllA2S();  // fire-and-forget A2S player/latency queries
+        // Ensure DOM is painted before querying A2S
+        setTimeout(() => queryAllA2S(), 50);
     }
 
     function renderError(err) {
