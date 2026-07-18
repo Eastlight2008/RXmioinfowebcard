@@ -406,10 +406,6 @@
     let countdownTimer = null;
     let countdownValue = REFRESH_INTERVAL;
 
-    // A2S result cache: key = "ip:port", value = { players, max_players, latency_ms, ts }
-    const a2sCache = {};
-    const A2S_CACHE_TTL = 30000; // 30s
-
     // ── Helpers ──────────────────────────────────────────────
 
     /** "2026-07-18 13:22:33" */
@@ -479,42 +475,41 @@
         }
     }
 
-    // ── A2S Query (via Cloudflare Function proxy) ───────────
+    // ── A2S Query (direct from browser, no Cloudflare needed) ─
 
-    /** Measure real latency from browser to game server (TCP handshake RTT) */
-    async function pingServer(ip, port) {
-        const start = performance.now();
-        const ctrl = new AbortController();
-        const timer = setTimeout(() => ctrl.abort(), 3000);
-        try {
-            await fetch(`http://${ip}:${port}/`, {
-                mode: 'no-cors',
-                signal: ctrl.signal,
-            });
-        } catch (_) {
-            // Expected — game server won't speak HTTP, but TCP handshake already happened
-        }
-        clearTimeout(timer);
-        return Math.round(performance.now() - start);
+    const UAPI_URL = 'https://uapis.cn/api/v1/game/steam/servers?appid=4000&name=Neo%20RXBreach&limit=30';
+
+    let _serverCache = null;
+    let _serverTs = 0;
+    const _UAPI_CACHE_MS = 30000;
+
+    /** Fetch all Neo RXBreach servers from uapis.cn (cached 30s) */
+    async function fetchServerList() {
+        const now = Date.now();
+        if (_serverCache && (now - _serverTs) < _UAPI_CACHE_MS) return _serverCache;
+        const resp = await fetch(UAPI_URL);
+        if (!resp.ok) throw new Error(`UApiPro HTTP ${resp.status}`);
+        const json = await resp.json();
+        _serverCache = json.servers || [];
+        _serverTs = now;
+        return _serverCache;
     }
 
-    async function queryA2S(ip, port) {
-        const key = `${ip}:${port}`;
-        const cached = a2sCache[key];
-        if (cached && (Date.now() - cached.ts) < A2S_CACHE_TTL) {
-            return cached;
-        }
-        try {
-            const resp = await fetch(`/api/a2s?ip=${encodeURIComponent(ip)}&port=${port}`);
-            const data = await resp.json();
-            const result = { ...data, ts: Date.now() };
-            a2sCache[key] = result;
-            return result;
-        } catch (err) {
-            const result = { error: err.message, ts: Date.now() };
-            a2sCache[key] = result;
-            return result;
-        }
+    /** Measure real latency from browser to game server (TCP handshake RTT).
+     *  Uses Image() to force a genuine TCP connection attempt. */
+    function pingServer(ip, port) {
+        return new Promise((resolve) => {
+            const start = performance.now();
+            const img = new Image();
+            const done = () => {
+                clearTimeout(timer);
+                resolve(Math.round(performance.now() - start));
+            };
+            const timer = setTimeout(done, 3000);
+            img.onload  = done;
+            img.onerror = done;
+            img.src = `http://${ip}:${port}/ping.gif?${Date.now()}`;
+        });
     }
 
     function updateA2SRow(row, data) {
@@ -531,11 +526,9 @@
             return;
         }
 
-        // Players
         playersEl.className = 'a2s-value';
         playersEl.textContent = `${data.players}/${data.max_players}`;
 
-        // Latency with color
         const ms = data.latency_ms;
         latencyEl.textContent = `${ms}ms`;
         latencyEl.className = 'a2s-value';
@@ -545,6 +538,14 @@
     }
 
     async function queryAllA2S() {
+        // Fetch server list once, then match each card
+        let servers;
+        try {
+            servers = await fetchServerList();
+        } catch (err) {
+            // All servers show N/A if uapis.cn is unreachable
+        }
+
         const rows = document.querySelectorAll('.a2s-row');
         for (const row of rows) {
             const addr = row.getAttribute('data-addr');
@@ -553,11 +554,25 @@
             const port = parseInt(portStr, 10);
             if (!ip || !port) continue;
 
-            // Fetch player count from API
-            const data = await queryA2S(ip, port);
-            updateA2SRow(row, data);
+            let data;
+            if (servers) {
+                const srv = servers.find(s => s.ip === ip && s.port === port);
+                if (srv) {
+                    data = {
+                        players: srv.players ?? 0,
+                        max_players: srv.max_players ?? 0,
+                        latency_ms: null, // filled by ping below
+                    };
+                } else {
+                    data = { error: 'Not found' };
+                }
+            } else {
+                data = { error: 'uapis.cn unreachable' };
+            }
 
-            // Override latency with real local ping (fire-and-forget per server)
+            updateA2SRow(row, { ...data, latency_ms: '…' });
+
+            // Ping for real latency, then overwrite
             if (!data.error) {
                 pingServer(ip, port).then(ms => {
                     const cells = row.querySelectorAll('.a2s-value');
