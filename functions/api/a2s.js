@@ -1,87 +1,88 @@
-// Cloudflare Pages Function — Steam Game Server Query via Web API
+// Cloudflare Pages Function — Game Server Query via UApiPro
 // GET /api/a2s?ip=1.2.3.4&port=27015
 // Returns { players, max_players, latency_ms } or { error }
-//
-// Uses Steam Web API IGameServersService/GetServerList — pure HTTPS, no raw sockets needed.
-// Falls back to ISteamApps/GetServersAtAddress if the primary endpoint returns no results.
 
-const STEAM_API_BASE = 'https://api.steampowered.com';
-const CORS_HEADERS = { 'Access-Control-Allow-Origin': '*' };
+const UAPI_URL = 'https://uapis.cn/api/v1/game/steam/servers';
+const APPID    = 4000;
+const SEARCH   = 'Neo RXBreach';
 
-// ── Helpers ─────────────────────────────────────────────────────
+const CORS = { 'Access-Control-Allow-Origin': '*' };
 
-function json(data, opts = {}) {
-  return Response.json(data, { headers: { ...CORS_HEADERS, ...opts.headers }, ...opts });
+// In-memory cache (shared across requests within the same isolate)
+let _cache = null;
+let _cacheTs = 0;
+const CACHE_MS = 30000; // 30s
+
+async function getAllServers() {
+  const now = Date.now();
+  if (_cache && (now - _cacheTs) < CACHE_MS) {
+    return _cache;
+  }
+
+  const url = `${UAPI_URL}?appid=${APPID}&name=${encodeURIComponent(SEARCH)}&limit=30`;
+  const resp = await fetch(url);
+
+  if (!resp.ok) {
+    throw new Error(`UApiPro HTTP ${resp.status}`);
+  }
+
+  const data = await resp.json();
+
+  if (!data?.servers) {
+    throw new Error('Unexpected UApiPro response');
+  }
+
+  _cache = data;
+  _cacheTs = now;
+  return data;
 }
 
 // ── Request Handler ────────────────────────────────────────────
 
 export async function onRequest(context) {
   const url = new URL(context.request.url);
+
+  // Health-check / debug endpoint
+  if (url.pathname === '/api/a2s/debug') {
+    try {
+      const data = await getAllServers();
+      return Response.json({
+        ok: true,
+        server_count: data.servers?.length ?? 0,
+        sample: data.servers?.[0] ?? null,
+      }, { headers: CORS });
+    } catch (err) {
+      return Response.json({ ok: false, error: err.message }, { status: 502, headers: CORS });
+    }
+  }
+
   const ip   = url.searchParams.get('ip');
   const port = parseInt(url.searchParams.get('port'), 10);
 
   if (!ip || !port) {
-    return json({ error: 'Missing ip or port' }, { status: 400 });
+    return Response.json({ error: 'Missing ip or port' }, { status: 400, headers: CORS });
   }
 
   const start = Date.now();
-  let result = null;
 
-  // ── Primary: IGameServersService/GetServerList ──
-  // Filter queries Steam's master server for this exact IP:port.
-  // Returns players / max_players / bots / map / name etc.
   try {
-    const filter = `\\appid\\4000\\addr\\${ip}:${port}`;
-    const apiUrl = `${STEAM_API_BASE}/IGameServersService/GetServerList/v1/?filter=${encodeURIComponent(filter)}&limit=1`;
+    const data = await getAllServers();
+    const server = data.servers.find(s => s.ip === ip && s.port === port);
+    const latency = Date.now() - start;
 
-    const resp = await fetch(apiUrl, { headers: { 'Accept': 'application/json' } });
-
-    if (resp.ok) {
-      const data = await resp.json();
-      const servers = data?.response?.servers;
-      if (servers && servers.length > 0) {
-        result = servers[0];
-      }
+    if (!server) {
+      return Response.json({ error: 'Not found', latency_ms: latency }, { headers: { ...CORS, 'Cache-Control': 'max-age=10' } });
     }
-    // If !resp.ok or no servers, fall through to fallback
-  } catch (_) {
-    // Primary failed — try fallback
-  }
 
-  // ── Fallback: ISteamApps/GetServersAtAddress ──
-  // Broader query by IP only; may return servers on other ports.
-  if (!result) {
-    try {
-      const apiUrl = `${STEAM_API_BASE}/ISteamApps/GetServersAtAddress/v1/?addr=${encodeURIComponent(ip)}`;
-      const resp = await fetch(apiUrl, { headers: { 'Accept': 'application/json' } });
-
-      if (resp.ok) {
-        const data = await resp.json();
-        const servers = data?.response?.servers;
-        if (servers && servers.length > 0) {
-          // Try to match by port
-          result = servers.find(s => s.gameport === port) || servers[0];
-        }
-      }
-    } catch (_) {
-      // Both endpoints failed
-    }
-  }
-
-  const latency = Date.now() - start;
-
-  if (!result) {
-    return json({ error: 'Server not found in Steam master list', latency_ms: latency });
-  }
-
-  return json(
-    {
-      players:     result.players ?? 0,
-      max_players: result.max_players ?? 0,
-      bots:        result.bots ?? 0,
+    return Response.json({
+      players:     server.players ?? 0,
+      max_players: server.max_players ?? 0,
       latency_ms:  latency,
-    },
-    { headers: { 'Cache-Control': 'public, max-age=20' } },
-  );
+    }, { headers: { ...CORS, 'Cache-Control': 'max-age=20' } });
+  } catch (err) {
+    return Response.json(
+      { error: err.message, latency_ms: Date.now() - start },
+      { status: 502, headers: CORS },
+    );
+  }
 }
