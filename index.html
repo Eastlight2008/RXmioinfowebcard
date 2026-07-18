@@ -513,7 +513,7 @@
 
         // Pass 1: uapis.cn servers (mio only) — include restarting ones missing from status.php
         for (const u of uapiServers) {
-            if (!u.name || !/mio|RXBreach/i.test(u.name)) continue;
+            if (!u.name || !/mio/i.test(u.name) || /n!n|兑换服/i.test(u.name)) continue;
             const key = `${u.ip}:${u.port}`;
             if (seen.has(key)) continue;
             seen.add(key);
