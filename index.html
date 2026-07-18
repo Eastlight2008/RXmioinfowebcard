@@ -483,31 +483,56 @@
         }
     }
 
-    // ── Server Data (merged from status.php + uapis.cn) ────
+    // ── Server Data (merged from status.php + gamemonitoring.cn) ─
 
-    const UAPI_URL = 'https://uapis.cn/api/v1/game/steam/servers?appid=4000&name=Neo%20RXBreach&limit=30';
-
-    /**
-     * Fetch both status.php and uapis.cn, merge into unified server list.
-     * uapis.cn is the source of truth for which servers exist (catches restarts).
-     * status.php provides round details for active servers.
-     */
-    function fetchTimeout(url, ms) {
-        const ctrl = new AbortController();
-        const id = setTimeout(() => ctrl.abort(), ms);
-        return fetch(url, { signal: ctrl.signal }).finally(() => clearTimeout(id));
-    }
+    const GM_API = 'https://gamemonitoring.cn/api/servers/';
+    // IP:port → gamemonitoring.cn server_id
+    const GM_IDS = {
+        '103.91.209.165:27076': 11927610,  // ①服(附属)
+        '103.91.209.165:27265': 11927663,  // 白菜测试服(附属)
+        '103.91.209.165:27852': 11927660,  // ③服(附属)
+        '202.189.7.25:27076':   11542471,  // ①服
+        '202.189.7.25:27265':   11708197,  // ②服
+        '202.189.7.25:27852':   11542465,  // ③服
+        '202.189.9.189:27045':  11327253,  // ④服
+        '202.189.9.189:27235':  11448045,  // ⑤服
+        '202.189.9.189:27265':  11448047,  // ⑥服
+        '202.189.9.229:27265':  11542467,  // 白菜测试服
+        '202.189.9.229:27545':  11327239,  // 娘娘测试服
+        '202.189.9.229:28158':  11327270,  // 猫娘窝测试服
+    };
 
     async function loadMergedServers() {
-        const [sRes, uRes] = await Promise.allSettled([
-            fetch(STAT_API).then(r => r.ok ? r.json() : Promise.reject()),
-            fetchTimeout(UAPI_URL, 8000).then(r => r.ok ? r.json() : Promise.reject()),
-        ]);
+        // Fetch status.php
+        let statusServers = [];
+        try {
+            const r = await fetch(STAT_API);
+            if (r.ok) { const d = await r.json(); statusServers = d.servers || []; }
+        } catch (_) {}
 
-        const statusServers = sRes.status === 'fulfilled' ? (sRes.value.servers || []) : [];
-        const uapiServers   = uRes.status === 'fulfilled' ? (uRes.value.servers || []) : [];
+        // Fetch all gamemonitoring.cn servers in parallel
+        const gmKeys = Object.keys(GM_IDS);
+        const gmResults = await Promise.allSettled(
+            gmKeys.map(key => fetch(`${GM_API}${GM_IDS[key]}`).then(r => r.ok ? r.json() : Promise.reject()))
+        );
 
-        // Index status.php by IP:port for quick lookup
+        // Build lookup: IP:port → { name, players, max_players, status }
+        const gmMap = {};
+        for (let i = 0; i < gmKeys.length; i++) {
+            const key = gmKeys[i];
+            const res = gmResults[i];
+            if (res.status === 'fulfilled' && res.value?.response) {
+                const r = res.value.response;
+                gmMap[key] = {
+                    name: r.name,
+                    players: r.numplayers ?? 0,
+                    max_players: r.maxplayers ?? 0,
+                    online: r.status,
+                };
+            }
+        }
+
+        // Index status.php by IP:port
         const sMap = {};
         for (const s of statusServers) {
             if (s.server_name.includes('兑换服')) continue;
@@ -517,26 +542,26 @@
         const seen = new Set();
         const list = [];
 
-        // Pass 1: uapis.cn servers (mio only) — include restarting ones missing from status.php
-        for (const u of uapiServers) {
-            if (!u.name || !/mio/i.test(u.name) || /n!n|兑换服/i.test(u.name)) continue;
-            const key = `${u.ip}:${u.port}`;
+        // Pass 1: gamemonitoring servers (master list)
+        for (const key of gmKeys) {
             if (seen.has(key)) continue;
             seen.add(key);
+            const gm = gmMap[key];
             const st = sMap[key];
+            const [ip, portStr] = key.split(':');
             list.push({
-                server_name:     u.name,
-                ip:              u.ip,
-                port:            u.port,
-                players:         u.players ?? 0,
-                max_players:     u.max_players ?? 0,
+                server_name:     (st ? st.server_name : gm ? gm.name : ''),
+                ip:              ip,
+                port:            parseInt(portStr, 10),
+                players:         gm ? gm.players     : null,
+                max_players:     gm ? gm.max_players : null,
                 rounds_left:     st ? st.rounds_left     : '—',
                 round_time_left: st ? st.round_time_left : '—',
                 round_phase:     st ? st.round_phase     : '重启/离线中',
             });
         }
 
-        // Pass 2: status.php servers not already covered
+        // Pass 2: status.php servers not in gamemonitoring
         for (const s of statusServers) {
             if (s.server_name.includes('兑换服')) continue;
             const key = `${s.ip}:${s.port}`;
@@ -608,6 +633,10 @@
             const phaseText = isOff ? '离线/重启中' : s.round_phase;
             const playersText = (s.players != null) ? `${s.players}/${s.max_players}` : '…';
             const playersCls  = (s.players != null) ? 'a2s-value' : 'a2s-value a2s-loading';
+            let roundTimeText = formatDuration(s.round_time_left);
+            if (s.round_phase === '回合中' && s.round_time_left === 0) {
+                roundTimeText = 'GOC开核中/COTSK开导中';
+            }
 
             html += `
             <div class="card phase-${pc}">
@@ -620,7 +649,7 @@
                     </div>
                     <div>
                         <div class="label">回合时间</div>
-                        <div class="value">${formatDuration(s.round_time_left)}</div>
+                        <div class="value">${roundTimeText}</div>
                     </div>
                 </div>
                 <div class="info-row">
