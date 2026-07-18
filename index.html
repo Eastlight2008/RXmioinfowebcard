@@ -429,6 +429,7 @@
 
     let countdownTimer = null;
     let countdownValue = REFRESH_INTERVAL;
+    let _busy = false;
 
     // ── Helpers ──────────────────────────────────────────────
 
@@ -491,10 +492,16 @@
      * uapis.cn is the source of truth for which servers exist (catches restarts).
      * status.php provides round details for active servers.
      */
+    function fetchTimeout(url, ms) {
+        const ctrl = new AbortController();
+        const id = setTimeout(() => ctrl.abort(), ms);
+        return fetch(url, { signal: ctrl.signal }).finally(() => clearTimeout(id));
+    }
+
     async function loadMergedServers() {
         const [sRes, uRes] = await Promise.allSettled([
             fetch(STAT_API).then(r => r.ok ? r.json() : Promise.reject()),
-            fetch(UAPI_URL).then(r => r.ok ? r.json() : Promise.reject()),
+            fetchTimeout(UAPI_URL, 8000).then(r => r.ok ? r.json() : Promise.reject()),
         ]);
 
         const statusServers = sRes.status === 'fulfilled' ? (sRes.value.servers || []) : [];
@@ -672,14 +679,18 @@
     }
 
     async function refresh() {
+        if (_busy) return;
+        _busy = true;
         try {
             const servers = await loadMergedServers();
             if (servers.length === 0) throw new Error('No servers found');
             render(servers);
         } catch (err) {
             renderError(err);
+        } finally {
+            _busy = false;
+            startCountdown();
         }
-        startCountdown();
     }
 
     // ── Init ────────────────────────────────────────────────
