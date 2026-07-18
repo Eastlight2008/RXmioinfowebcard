@@ -169,6 +169,7 @@
         .card.phase-ready::before    { background: linear-gradient(90deg, #ff9800, #ffb74d); }
         .card.phase-idle::before     { background: linear-gradient(90deg, #757575, #9e9e9e); }
         .card.phase-unknown::before  { background: linear-gradient(90deg, #607d8b, #90a4ae); }
+        .card.phase-offline::before { background: linear-gradient(90deg, #ff9800, #ffb74d); }
 
         .card .name {
             font-size: 0.95rem;
@@ -191,7 +192,14 @@
             justify-content: space-between;
             align-items: center;
             gap: 8px;
-            flex-wrap: wrap;
+        }
+        .card .info-row > div:first-child {
+            flex: 0 0 auto;
+        }
+        .card .info-row > div:last-child {
+            flex: 0 0 auto;
+            text-align: right;
+            margin-left: auto;
         }
         .card .label {
             font-size: 0.72rem;
@@ -218,6 +226,7 @@
         .badge-ready  { background: rgba(255, 152, 0,   0.2);  color: #ffb74d; }
         .badge-idle   { background: rgba(158, 158, 158, 0.2);  color: #bdbdbd; }
         .badge-unknown{ background: rgba(96,  125, 139, 0.2);  color: #90a4ae; }
+        .badge-offline{ background: rgba(255, 152, 0,   0.25); color: #ffb74d; }
 
         .card .a2s-row {
             border-top: 1px solid rgba(255,255,255,0.06);
@@ -238,9 +247,25 @@
             color: #e57373;
             font-size: 0.75rem;
         }
-        .card .a2s-latency-good { color: #81c784; }
-        .card .a2s-latency-ok   { color: #ffb74d; }
-        .card .a2s-latency-bad  { color: #e57373; }
+        .card .a2s-offline {
+            color: #ff9800;
+            font-size: 0.85rem;
+        }
+        .card .a2s-join-btn {
+            display: inline-block;
+            padding: 5px 16px;
+            font-size: 0.82rem;
+            font-weight: 600;
+            color: #fff;
+            background: linear-gradient(135deg, #1a6b3c, #2a8f4e);
+            border-radius: 6px;
+            text-decoration: none;
+            transition: background 0.2s, transform 0.15s;
+        }
+        .card .a2s-join-btn:hover {
+            background: linear-gradient(135deg, #218a4c, #34a85e);
+            transform: scale(1.04);
+        }
         @keyframes pulse {
             0%, 100% { opacity: 1; }
             50%      { opacity: 0.4; }
@@ -458,141 +483,68 @@
         }
     }
 
-    // ── Server Data ─────────────────────────────────────────
-
-    async function loadServers() {
-        try {
-            const resp = await fetch(STAT_API);
-            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-            const data = await resp.json();
-            if (!data.servers || !Array.isArray(data.servers)) {
-                throw new Error('Unexpected data format');
-            }
-            return data;
-        } catch (err) {
-            console.error('Server status fetch failed:', err.message);
-            throw err;
-        }
-    }
-
-    // ── A2S Query (direct from browser, no Cloudflare needed) ─
+    // ── Server Data (merged from status.php + uapis.cn) ────
 
     const UAPI_URL = 'https://uapis.cn/api/v1/game/steam/servers?appid=4000&name=Neo%20RXBreach&limit=30';
 
-    let _serverCache = null;
-    let _serverTs = 0;
-    const _UAPI_CACHE_MS = 30000;
+    /**
+     * Fetch both status.php and uapis.cn, merge into unified server list.
+     * uapis.cn is the source of truth for which servers exist (catches restarts).
+     * status.php provides round details for active servers.
+     */
+    async function loadMergedServers() {
+        const [sRes, uRes] = await Promise.allSettled([
+            fetch(STAT_API).then(r => r.ok ? r.json() : Promise.reject()),
+            fetch(UAPI_URL).then(r => r.ok ? r.json() : Promise.reject()),
+        ]);
 
-    /** Fetch all Neo RXBreach servers from uapis.cn (cached 30s) */
-    async function fetchServerList() {
-        const now = Date.now();
-        if (_serverCache && (now - _serverTs) < _UAPI_CACHE_MS) return _serverCache;
-        const resp = await fetch(UAPI_URL);
-        if (!resp.ok) throw new Error(`UApiPro HTTP ${resp.status}`);
-        const json = await resp.json();
-        _serverCache = json.servers || [];
-        _serverTs = now;
-        return _serverCache;
-    }
+        const statusServers = sRes.status === 'fulfilled' ? (sRes.value.servers || []) : [];
+        const uapiServers   = uRes.status === 'fulfilled' ? (uRes.value.servers || []) : [];
 
-    /** Measure real latency from browser to game server (TCP handshake RTT).
-     *  Uses Image() to force a genuine TCP connection attempt. */
-    function pingServer(ip, port) {
-        return new Promise((resolve) => {
-            const start = performance.now();
-            const img = new Image();
-            const done = () => {
-                clearTimeout(timer);
-                resolve(Math.round(performance.now() - start));
-            };
-            const timer = setTimeout(done, 3000);
-            img.onload  = done;
-            img.onerror = done;
-            img.src = `http://${ip}:${port}/ping.gif?${Date.now()}`;
-        });
-    }
-
-    function updateA2SRow(row, data) {
-        const cells = row.querySelectorAll('.a2s-value');
-        if (cells.length < 2) return;
-        const playersEl = cells[0];
-        const latencyEl = cells[1];
-
-        if (data.error) {
-            playersEl.className = 'a2s-value a2s-error';
-            playersEl.textContent = 'N/A';
-            latencyEl.className = 'a2s-value a2s-error';
-            latencyEl.textContent = 'N/A';
-            return;
+        // Index status.php by IP:port for quick lookup
+        const sMap = {};
+        for (const s of statusServers) {
+            if (s.server_name.includes('兑换服')) continue;
+            sMap[`${s.ip}:${s.port}`] = s;
         }
 
-        playersEl.className = 'a2s-value';
-        playersEl.textContent = `${data.players}/${data.max_players}`;
+        const seen = new Set();
+        const list = [];
 
-        const ms = data.latency_ms;
-        latencyEl.textContent = `${ms}ms`;
-        latencyEl.className = 'a2s-value';
-        if (ms < 60)       latencyEl.classList.add('a2s-latency-good');
-        else if (ms < 120) latencyEl.classList.add('a2s-latency-ok');
-        else               latencyEl.classList.add('a2s-latency-bad');
-    }
-
-    async function queryAllA2S() {
-        // Fetch server list once, then match each card
-        let servers;
-        try {
-            servers = await fetchServerList();
-        } catch (err) {
-            // All servers show N/A if uapis.cn is unreachable
+        // Pass 1: uapis.cn servers (mio only) — include restarting ones missing from status.php
+        for (const u of uapiServers) {
+            if (!u.name || !/mio|RXBreach/i.test(u.name)) continue;
+            const key = `${u.ip}:${u.port}`;
+            if (seen.has(key)) continue;
+            seen.add(key);
+            const st = sMap[key];
+            list.push({
+                server_name:     u.name,
+                ip:              u.ip,
+                port:            u.port,
+                players:         u.players ?? 0,
+                max_players:     u.max_players ?? 0,
+                rounds_left:     st ? st.rounds_left     : '—',
+                round_time_left: st ? st.round_time_left : '—',
+                round_phase:     st ? st.round_phase     : '重启/离线中',
+            });
         }
 
-        const rows = document.querySelectorAll('.a2s-row');
-        for (const row of rows) {
-            const addr = row.getAttribute('data-addr');
-            if (!addr) continue;
-            const [ip, portStr] = addr.split(':');
-            const port = parseInt(portStr, 10);
-            if (!ip || !port) continue;
-
-            let data;
-            if (servers) {
-                const srv = servers.find(s => s.ip === ip && s.port === port);
-                if (srv) {
-                    data = {
-                        players: srv.players ?? 0,
-                        max_players: srv.max_players ?? 0,
-                        latency_ms: null, // filled by ping below
-                    };
-                } else {
-                    data = { error: 'Not found' };
-                }
-            } else {
-                data = { error: 'uapis.cn unreachable' };
-            }
-
-            updateA2SRow(row, { ...data, latency_ms: '…' });
-
-            // Ping for real latency, then overwrite
-            if (!data.error) {
-                pingServer(ip, port).then(ms => {
-                    const cells = row.querySelectorAll('.a2s-value');
-                    if (cells.length < 2) return;
-                    const latencyEl = cells[1];
-                    latencyEl.textContent = `${ms}ms`;
-                    latencyEl.className = 'a2s-value';
-                    if (ms < 60)       latencyEl.classList.add('a2s-latency-good');
-                    else if (ms < 120) latencyEl.classList.add('a2s-latency-ok');
-                    else               latencyEl.classList.add('a2s-latency-bad');
-                });
-            }
+        // Pass 2: status.php servers not already covered
+        for (const s of statusServers) {
+            if (s.server_name.includes('兑换服')) continue;
+            const key = `${s.ip}:${s.port}`;
+            if (seen.has(key)) continue;
+            seen.add(key);
+            list.push({ ...s, players: null, max_players: null });
         }
+
+        return list;
     }
 
     // ── Render ──────────────────────────────────────────────
 
-    function render(data) {
-        const servers = data.servers.filter(s => !s.server_name.includes('兑换服'));
-
+    function render(servers) {
         // Fixed sort: ①②③④⑤⑥ first (附属 right after its number), then test servers
         servers.sort((a, b) => {
             const numMap = { '①':1,'②':2,'③':3,'④':4,'⑤':5,'⑥':6 };
@@ -629,14 +581,14 @@
         const now = Math.floor(Date.now() / 1000);
 
         // Status bar
-        const total   = servers.length;
-        const online  = servers.filter(s => s.round_phase !== '空闲').length;
-        const idle    = total - online;
+        const total    = servers.length;
+        const running  = servers.filter(s => s.round_phase !== '空闲' && s.round_phase !== '重启/离线中').length;
+        const offline  = servers.filter(s => s.round_phase === '空闲' || s.round_phase === '重启/离线中').length;
 
         $statusBar.style.display = '';
         $statusBar.innerHTML = `
-            <span><span class="dot online"></span> 运行中: <strong>${online}</strong></span>
-            <span><span class="dot idle"></span> 空闲: <strong>${idle}</strong></span>
+            <span><span class="dot online"></span> 运行中: <strong>${running}</strong></span>
+            <span><span class="dot warn"></span> 离线: <strong>${offline}</strong></span>
             <span>总计: <strong>${total}</strong> 台</span>
             <span>页面时间: <strong>${formatTime(now)}</strong></span>
         `;
@@ -644,8 +596,12 @@
         // Cards
         let html = '';
         for (const s of servers) {
-            const pc = phaseClass(s.round_phase);
-            const bc = phaseBadgeClass(s.round_phase);
+            const isOff   = s.round_phase === '空闲' || s.round_phase === '重启/离线中';
+            const pc      = isOff ? 'offline' : phaseClass(s.round_phase);
+            const bc      = isOff ? 'badge-offline' : phaseBadgeClass(s.round_phase);
+            const phaseText = isOff ? '离线/重启中' : s.round_phase;
+            const playersText = (s.players != null) ? `${s.players}/${s.max_players}` : '…';
+            const playersCls  = (s.players != null) ? 'a2s-value' : 'a2s-value a2s-loading';
 
             html += `
             <div class="card phase-${pc}">
@@ -661,18 +617,17 @@
                         <div class="value">${formatDuration(s.round_time_left)}</div>
                     </div>
                 </div>
-                <div class="info-row a2s-row" data-addr="${escapeHtml(s.ip)}:${escapeHtml(String(s.port))}">
+                <div class="info-row">
                     <div>
                         <div class="label">玩家</div>
-                        <div class="a2s-value a2s-loading">…</div>
+                        <div class="${playersCls}">${playersText}</div>
                     </div>
                     <div>
-                        <div class="label">延迟</div>
-                        <div class="a2s-value a2s-loading">…</div>
+                        <a class="a2s-join-btn" href="steam://connect/${escapeHtml(s.ip)}:${s.port}">加入</a>
                     </div>
                 </div>
                 <div class="info-row">
-                    <span class="phase-badge ${bc}">${escapeHtml(s.round_phase)}</span>
+                    <span class="phase-badge ${bc}">${escapeHtml(phaseText)}</span>
                 </div>
                 <div class="time-info">
                     <span>更新于 ${formatTime(now)}</span>
@@ -681,8 +636,6 @@
         }
 
         $grid.innerHTML = html;
-        // Ensure DOM is painted before querying A2S
-        setTimeout(() => queryAllA2S(), 50);
     }
 
     function renderError(err) {
@@ -723,8 +676,9 @@
 
     async function refresh() {
         try {
-            const data = await loadServers();
-            render(data);
+            const servers = await loadMergedServers();
+            if (servers.length === 0) throw new Error('No servers found');
+            render(servers);
         } catch (err) {
             renderError(err);
         }
