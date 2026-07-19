@@ -1,87 +1,83 @@
-// Cloudflare Pages Function — Game Server Query via UApiPro
-// GET /api/a2s?ip=1.2.3.4&port=27015
-// Returns { players, max_players, latency_ms } or { error }
+// Cloudflare Pages Function — A2S relay to self-hosted VPS
+//
+// Env vars (set in Cloudflare Pages dashboard):
+//   A2S_RELAY_URL  = "http://YOUR_VPS_IP:3000"
+//   A2S_SECRET     = "your-shared-secret"  (optional, must match VPS side)
+//
+// Single: GET  /api/a2s?ip=1.2.3.4&port=27015
+// Batch:   GET  /api/a2s?servers=1.2.3.4:27015,5.6.7.8:27015
+// Returns  { results: [{ip, port, players, max_players, server_name, error?}] }
 
-const UAPI_URL = 'https://uapis.cn/api/v1/game/steam/servers';
-const APPID    = 4000;
-const SEARCH   = 'Neo RXBreach';
-
-const CORS = { 'Access-Control-Allow-Origin': '*' };
-
-// In-memory cache (shared across requests within the same isolate)
-let _cache = null;
-let _cacheTs = 0;
-const CACHE_MS = 30000; // 30s
-
-async function getAllServers() {
-  const now = Date.now();
-  if (_cache && (now - _cacheTs) < CACHE_MS) {
-    return _cache;
-  }
-
-  const url = `${UAPI_URL}?appid=${APPID}&name=${encodeURIComponent(SEARCH)}&limit=30`;
-  const resp = await fetch(url);
-
-  if (!resp.ok) {
-    throw new Error(`UApiPro HTTP ${resp.status}`);
-  }
-
-  const data = await resp.json();
-
-  if (!data?.servers) {
-    throw new Error('Unexpected UApiPro response');
-  }
-
-  _cache = data;
-  _cacheTs = now;
-  return data;
-}
+const RELAY_URL = typeof A2S_RELAY_URL !== 'undefined' ? A2S_RELAY_URL : null;
+const RELAY_KEY = typeof A2S_SECRET !== 'undefined' ? A2S_SECRET : null;
+const CORS      = { 'Access-Control-Allow-Origin': '*' };
 
 // ── Request Handler ────────────────────────────────────────────
 
 export async function onRequest(context) {
   const url = new URL(context.request.url);
 
-  // Health-check / debug endpoint
-  if (url.pathname === '/api/a2s/debug') {
-    try {
-      const data = await getAllServers();
-      return Response.json({
-        ok: true,
-        server_count: data.servers?.length ?? 0,
-        sample: data.servers?.[0] ?? null,
-      }, { headers: CORS });
-    } catch (err) {
-      return Response.json({ ok: false, error: err.message }, { status: 502, headers: CORS });
+  if (!RELAY_URL) {
+    return Response.json(
+      { error: 'A2S_RELAY_URL not configured' },
+      { status: 500, headers: CORS },
+    );
+  }
+
+  // Collect target servers
+  const servers = [];
+
+  const serversParam = url.searchParams.get('servers');
+  if (serversParam) {
+    // Batch mode: ?servers=ip:port,ip:port,...
+    for (const pair of serversParam.split(',')) {
+      const trimmed = pair.trim();
+      if (!trimmed) continue;
+      const [ip, portStr] = trimmed.split(':');
+      const port = parseInt(portStr, 10);
+      if (ip && port > 0) servers.push({ ip, port });
     }
+  } else {
+    // Single mode: ?ip=...&port=...
+    const ip   = url.searchParams.get('ip');
+    const port = parseInt(url.searchParams.get('port'), 10);
+    if (ip && port > 0) servers.push({ ip, port });
   }
 
-  const ip   = url.searchParams.get('ip');
-  const port = parseInt(url.searchParams.get('port'), 10);
-
-  if (!ip || !port) {
-    return Response.json({ error: 'Missing ip or port' }, { status: 400, headers: CORS });
+  if (servers.length === 0) {
+    return Response.json(
+      { error: 'No valid servers provided. Use ?ip=...&port=... or ?servers=ip:port,...' },
+      { status: 400, headers: CORS },
+    );
   }
 
-  const start = Date.now();
+  // ── Call VPS relay ──────────────────────────────────────────
+
+  const fetchHeaders = { 'Content-Type': 'application/json' };
+  if (RELAY_KEY) fetchHeaders['X-Relay-Key'] = RELAY_KEY;
 
   try {
-    const data = await getAllServers();
-    const server = data.servers.find(s => s.ip === ip && s.port === port);
-    const latency = Date.now() - start;
+    const vpsResp = await fetch(`${RELAY_URL}/a2s/batch`, {
+      method: 'POST',
+      headers: fetchHeaders,
+      body: JSON.stringify({ servers }),
+    });
 
-    if (!server) {
-      return Response.json({ error: 'Not found', latency_ms: latency }, { headers: { ...CORS, 'Cache-Control': 'max-age=10' } });
+    if (!vpsResp.ok) {
+      const text = await vpsResp.text();
+      return Response.json(
+        { error: `VPS relay returned ${vpsResp.status}: ${text}` },
+        { status: 502, headers: CORS },
+      );
     }
 
-    return Response.json({
-      players:     server.players ?? 0,
-      max_players: server.max_players ?? 0,
-      latency_ms:  latency,
-    }, { headers: { ...CORS, 'Cache-Control': 'max-age=20' } });
+    const data = await vpsResp.json();
+    return Response.json(data, {
+      headers: { ...CORS, 'Cache-Control': 'max-age=10' },
+    });
   } catch (err) {
     return Response.json(
-      { error: err.message, latency_ms: Date.now() - start },
+      { error: `VPS relay unreachable: ${err.message}` },
       { status: 502, headers: CORS },
     );
   }

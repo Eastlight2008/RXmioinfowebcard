@@ -1,0 +1,26 @@
+[Unit]
+Description=A2S UDP Relay Server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=nobody
+Group=nogroup
+WorkingDirectory=/opt/a2s-relay
+EnvironmentFile=/opt/a2s-relay/.env
+ExecStart=/opt/a2s-relay/venv/bin/gunicorn -w 4 -b 0.0.0.0:3000 --access-logfile /var/log/a2s-relay/access.log --error-logfile /var/log/a2s-relay/error.log server:app
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+# Security hardening
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/log/a2s-relay
+
+[Install]
+WantedBy=multi-user.target

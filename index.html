@@ -483,24 +483,49 @@
         }
     }
 
-    // ── Server Data (merged from status.php + gamemonitoring.cn) ─
+    // ── Server Data (merged from status.php + self-hosted A2S) ─
 
-    const GM_API = 'https://api.gamemonitoring.cn/servers/';
-    // IP:port → gamemonitoring.cn server_id
-    const GM_IDS = {
-        '103.91.209.165:27076': 11927610,  // ①服(附属)
-        '103.91.209.165:27265': 11927663,  // 白菜测试服(附属)
-        '103.91.209.165:27852': 11927660,  // ③服(附属)
-        '202.189.7.25:27076':   11542471,  // ①服
-        '202.189.7.25:27265':   11708197,  // ②服
-        '202.189.7.25:27852':   11542465,  // ③服
-        '202.189.9.189:27045':  11327253,  // ④服
-        '202.189.9.189:27235':  11448045,  // ⑤服
-        '202.189.9.189:27265':  11448047,  // ⑥服
-        '202.189.9.229:27265':  11542467,  // 白菜测试服
-        '202.189.9.229:27545':  11327239,  // 娘娘测试服
-        '202.189.9.229:28158':  11327270,  // 猫娘窝测试服
-    };
+    // 改成你的 VPS 公网 IP（浏览器直连，无跨域限制因为 server.py 已配 CORS）
+    const A2S_VPS_URL = 'http://154.64.254.135:3000';
+
+    // Master server list (order matters — displayed in this order)
+    const SERVER_LIST = [
+        '103.91.209.165:27076',  // ①服(附属)
+        '103.91.209.165:27265',  // 白菜测试服(附属)
+        '103.91.209.165:27852',  // ③服(附属)
+        '202.189.7.25:27076',    // ①服
+        '202.189.7.25:27265',    // ②服
+        '202.189.7.25:27852',    // ③服
+        '202.189.9.189:27045',   // ④服
+        '202.189.9.189:27235',   // ⑤服
+        '202.189.9.189:27265',   // ⑥服
+        '202.189.9.229:27265',   // 白菜测试服
+        '202.189.9.229:27545',   // 娘娘测试服
+        '202.189.9.229:28158',   // 猫娘窝测试服
+    ];
+
+    /** Try to fetch A2S results from a given URL, return parsed map or null */
+    async function tryFetchA2S(url) {
+        try {
+            const resp = await fetch(url, { signal: AbortSignal.timeout(5000) });
+            if (!resp.ok) return null;
+            const data = await resp.json();
+            if (!data.results) return null;
+            const map = {};
+            for (const r of data.results) {
+                if (!r.error) {
+                    map[`${r.ip}:${r.port}`] = {
+                        players: r.players,
+                        max_players: r.max_players,
+                        server_name: r.server_name,
+                    };
+                }
+            }
+            return map;
+        } catch (_) {
+            return null;
+        }
+    }
 
     async function loadMergedServers() {
         // Fetch status.php
@@ -510,27 +535,11 @@
             if (r.ok) { const d = await r.json(); statusServers = d.servers || []; }
         } catch (_) {}
 
-        // Fetch all gamemonitoring.cn servers in parallel
-        const gmKeys = Object.keys(GM_IDS);
-        const gmResults = await Promise.allSettled(
-            gmKeys.map(key => fetch(`${GM_API}${GM_IDS[key]}`).then(r => r.ok ? r.json() : Promise.reject()))
-        );
-
-        // Build lookup: IP:port → { name, players, max_players, status }
-        const gmMap = {};
-        for (let i = 0; i < gmKeys.length; i++) {
-            const key = gmKeys[i];
-            const res = gmResults[i];
-            if (res.status === 'fulfilled' && res.value?.response) {
-                const r = res.value.response;
-                gmMap[key] = {
-                    name: r.name,
-                    players: r.numplayers ?? 0,
-                    max_players: r.maxplayers ?? 0,
-                    online: r.status,
-                };
-            }
-        }
+        // Fetch player counts: VPS 直连 → Worker 中转 → 无数据
+        const serversParam = encodeURIComponent(SERVER_LIST.join(','));
+        let a2sMap = await tryFetchA2S(`${A2S_VPS_URL}/a2s/batch?servers=${serversParam}`)
+                  || await tryFetchA2S(`/api/a2s?servers=${serversParam}`)
+                  || {};
 
         // Index status.php by IP:port
         const sMap = {};
@@ -542,26 +551,26 @@
         const seen = new Set();
         const list = [];
 
-        // Pass 1: gamemonitoring servers (master list)
-        for (const key of gmKeys) {
+        // Pass 1: master server list
+        for (const key of SERVER_LIST) {
             if (seen.has(key)) continue;
             seen.add(key);
-            const gm = gmMap[key];
+            const a2s = a2sMap[key];
             const st = sMap[key];
             const [ip, portStr] = key.split(':');
             list.push({
-                server_name:     (st ? st.server_name : gm ? gm.name : ''),
+                server_name:     (st ? st.server_name : a2s ? a2s.server_name : ''),
                 ip:              ip,
                 port:            parseInt(portStr, 10),
-                players:         gm ? gm.players     : null,
-                max_players:     gm ? gm.max_players : null,
+                players:         a2s ? a2s.players     : null,
+                max_players:     a2s ? a2s.max_players : null,
                 rounds_left:     st ? st.rounds_left     : '—',
                 round_time_left: st ? st.round_time_left : '—',
                 round_phase:     st ? st.round_phase     : '重启/离线中',
             });
         }
 
-        // Pass 2: status.php servers not in gamemonitoring
+        // Pass 2: status.php servers not in master list
         for (const s of statusServers) {
             if (s.server_name.includes('兑换服')) continue;
             const key = `${s.ip}:${s.port}`;
