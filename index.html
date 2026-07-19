@@ -504,6 +504,22 @@
         '202.189.9.229:28158',   // 猫娘窝测试服
     ];
 
+    // Fallback display names used when both status.php and A2S return no name
+    const SERVER_NAMES = {
+        '103.91.209.165:27076': '①服(附属)',
+        '103.91.209.165:27265': '白菜测试服(附属)',
+        '103.91.209.165:27852': '③服(附属)',
+        '202.189.7.25:27076':   '①服',
+        '202.189.7.25:27265':   '②服',
+        '202.189.7.25:27852':   '③服',
+        '202.189.9.189:27045':  '④服',
+        '202.189.9.189:27235':  '⑤服',
+        '202.189.9.189:27265':  '⑥服',
+        '202.189.9.229:27265':  '白菜测试服',
+        '202.189.9.229:27545':  '娘娘测试服',
+        '202.189.9.229:28158':  '猫娘窝测试服',
+    };
+
     /** Try to fetch A2S results from a given URL, return parsed map or null */
     async function tryFetchA2S(url) {
         try {
@@ -559,7 +575,7 @@
             const st = sMap[key];
             const [ip, portStr] = key.split(':');
             list.push({
-                server_name:     (st ? st.server_name : a2s ? a2s.server_name : ''),
+                server_name:     (st ? st.server_name : a2s ? a2s.server_name : SERVER_NAMES[key] || ''),
                 ip:              ip,
                 port:            parseInt(portStr, 10),
                 players:         a2s ? a2s.players     : null,
@@ -585,45 +601,24 @@
     // ── Render ──────────────────────────────────────────────
 
     function render(servers) {
-        // Fixed sort: ①②③④⑤⑥ first (附属 right after its number), then test servers
+        // Fixed sort by SERVER_LIST order; servers not in the list go last
+        const orderMap = {};
+        for (let i = 0; i < SERVER_LIST.length; i++) {
+            orderMap[SERVER_LIST[i]] = i;
+        }
         servers.sort((a, b) => {
-            const numMap = { '①':1,'②':2,'③':3,'④':4,'⑤':5,'⑥':6 };
-            const getKey = (name) => {
-                const isTest = /白菜|娘娘|猫娘/.test(name);
-                const isSub  = name.includes('(附属)');
-                const isNum  = /[①-⑥]/.test(name);
-
-                // Priority: 0=numbered, 2=test, 3=fallback
-                let priority;
-                if (isTest)       priority = 2;
-                else if (isNum)   priority = 0;
-                else              priority = 3;
-
-                // Numeric order (①→1 … ⑥→6, others 99)
-                let num = 99;
-                for (const [ch, val] of Object.entries(numMap)) {
-                    if (name.includes(ch)) { num = val; break; }
-                }
-
-                // Sub-order: main=0, 附属=1 right after; test: 白菜/娘娘/猫娘
-                let sub = 99;
-                if (isSub)                    sub = 1;
-                else if (/白菜/.test(name))   sub = 0;
-                else if (/娘娘/.test(name))   sub = 1;
-                else if (/猫娘/.test(name))   sub = 2;
-                else                          sub = 0;
-
-                return priority * 10000 + num * 100 + sub;
-            };
-            return getKey(a.server_name) - getKey(b.server_name);
+            const keyA = `${a.ip}:${a.port}`;
+            const keyB = `${b.ip}:${b.port}`;
+            return (orderMap[keyA] ?? 999) - (orderMap[keyB] ?? 999);
         });
 
         const now = Math.floor(Date.now() / 1000);
 
         // Status bar
         const total    = servers.length;
-        const running  = servers.filter(s => s.round_phase !== '空闲' && s.round_phase !== '重启/离线中').length;
-        const offline  = servers.filter(s => s.round_phase === '空闲' || s.round_phase === '重启/离线中').length;
+        const waitingServer = s => s.round_phase === '空闲' && s.rounds_left === 0 && s.round_time_left === -1 && s.players >= 1;
+        const running  = servers.filter(s => (s.round_phase !== '空闲' && s.round_phase !== '重启/离线中') || waitingServer(s)).length;
+        const offline  = servers.filter(s => (s.round_phase === '空闲' || s.round_phase === '重启/离线中') && !waitingServer(s)).length;
 
         $statusBar.style.display = '';
         $statusBar.innerHTML = `
@@ -638,6 +633,7 @@
         for (const s of servers) {
             const isOff   = s.round_phase === '空闲' || s.round_phase === '重启/离线中';
             const isFinale = s.round_phase === '回合中' && s.round_time_left === 0;
+            const isWaiting = s.round_phase === '空闲' && s.rounds_left === 0 && s.round_time_left === -1 && s.players >= 1;
             let pc      = isOff ? 'offline' : phaseClass(s.round_phase);
             let bc      = isOff ? 'badge-offline' : phaseBadgeClass(s.round_phase);
             let phaseText = isOff ? '离线/重启中' : s.round_phase;
@@ -646,12 +642,18 @@
                 bc = 'badge-nuke';
                 phaseText = '终局事件';
             }
+            if (isWaiting) {
+                pc = 'idle';
+                bc = 'badge-idle';
+                phaseText = '等待玩家';
+            }
             const playersText = (s.players != null) ? `${s.players}/${s.max_players}` : '…';
             const playersCls  = (s.players != null) ? 'a2s-value' : 'a2s-value a2s-loading';
             let roundTimeText = formatDuration(s.round_time_left);
             if (s.round_phase === '回合中' && s.round_time_left === 0) {
                 roundTimeText = '开核/开祷中';
             }
+            const roundsLeftText = (isWaiting || s.rounds_left < 0) ? '—' : s.rounds_left;
 
             html += `
             <div class="card phase-${pc}">
@@ -660,7 +662,7 @@
                 <div class="info-row">
                     <div>
                         <div class="label">剩余回合</div>
-                        <div class="value">${s.rounds_left >= 0 ? s.rounds_left : '—'}</div>
+                        <div class="value">${roundsLeftText}</div>
                     </div>
                     <div>
                         <div class="label">回合时间</div>

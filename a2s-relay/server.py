@@ -32,7 +32,7 @@ RELAY_KEY = os.environ.get("A2S_RELAY_KEY", "")  # shared secret; empty = no aut
 # ── In-memory cache ────────────────────────────────────────────
 _cache: dict[str, tuple[float, dict]] = {}
 _cache_lock = threading.Lock()
-CACHE_TTL = 25  # seconds — shorter than Worker's refresh so stale data never leaves VPS
+CACHE_TTL = 5  # seconds
 
 
 # ── A2S_INFO protocol ──────────────────────────────────────────
