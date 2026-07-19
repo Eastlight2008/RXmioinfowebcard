@@ -485,39 +485,38 @@
 
     // ── Server Data (merged from status.php + self-hosted A2S) ─
 
-    // 改成你的 VPS 公网 IP（浏览器直连，无跨域限制因为 server.py 已配 CORS）
-    const A2S_VPS_URL = 'http://154.64.254.135:3000';
+    const A2S_API = 'https://rx.l1ght.xyz/a2s';  // VPS nginx → :3000, Cloudflare HTTPS
 
-    // Master server list (order matters — displayed in this order)
+    // Order: ①→⑥ (附属紧跟主服) → 白菜 → 白菜(附属) → 娘娘 → 猫娘窝
     const SERVER_LIST = [
-        '103.91.209.165:27076',  // ①服(附属)
-        '103.91.209.165:27265',  // 白菜测试服(附属)
-        '103.91.209.165:27852',  // ③服(附属)
         '202.189.7.25:27076',    // ①服
+        '103.91.209.165:27076',  // ①服(附属)
         '202.189.7.25:27265',    // ②服
         '202.189.7.25:27852',    // ③服
+        '103.91.209.165:27852',  // ③服(附属)
         '202.189.9.189:27045',   // ④服
         '202.189.9.189:27235',   // ⑤服
         '202.189.9.189:27265',   // ⑥服
         '202.189.9.229:27265',   // 白菜测试服
+        '103.91.209.165:27265',  // 白菜测试服(附属)
         '202.189.9.229:27545',   // 娘娘测试服
         '202.189.9.229:28158',   // 猫娘窝测试服
     ];
 
     // Fallback display names used when both status.php and A2S return no name
     const SERVER_NAMES = {
-        '103.91.209.165:27076': '①服(附属)',
-        '103.91.209.165:27265': '白菜测试服(附属)',
-        '103.91.209.165:27852': '③服(附属)',
-        '202.189.7.25:27076':   '①服',
-        '202.189.7.25:27265':   '②服',
-        '202.189.7.25:27852':   '③服',
-        '202.189.9.189:27045':  '④服',
-        '202.189.9.189:27235':  '⑤服',
-        '202.189.9.189:27265':  '⑥服',
-        '202.189.9.229:27265':  '白菜测试服',
-        '202.189.9.229:27545':  '娘娘测试服',
-        '202.189.9.229:28158':  '猫娘窝测试服',
+        '202.189.7.25:27076':    '①服',
+        '103.91.209.165:27076':  '①服(附属)',
+        '202.189.7.25:27265':    '②服',
+        '202.189.7.25:27852':    '③服',
+        '103.91.209.165:27852':  '③服(附属)',
+        '202.189.9.189:27045':   '④服',
+        '202.189.9.189:27235':   '⑤服',
+        '202.189.9.189:27265':   '⑥服',
+        '202.189.9.229:27265':   '白菜测试服',
+        '103.91.209.165:27265':  '白菜测试服(附属)',
+        '202.189.9.229:27545':   '娘娘测试服',
+        '202.189.9.229:28158':   '猫娘窝测试服',
     };
 
     /** Try to fetch A2S results from a given URL, return parsed map or null */
@@ -551,11 +550,9 @@
             if (r.ok) { const d = await r.json(); statusServers = d.servers || []; }
         } catch (_) {}
 
-        // Fetch player counts: VPS 直连 → Worker 中转 → 无数据
+        // Fetch player counts via rx.l1ght.xyz (nginx → VPS:3000, Cloudflare HTTPS)
         const serversParam = encodeURIComponent(SERVER_LIST.join(','));
-        let a2sMap = await tryFetchA2S(`${A2S_VPS_URL}/a2s/batch?servers=${serversParam}`)
-                  || await tryFetchA2S(`/api/a2s?servers=${serversParam}`)
-                  || {};
+        let a2sMap = await tryFetchA2S(`${A2S_API}/batch?servers=${serversParam}`) || {};
 
         // Index status.php by IP:port
         const sMap = {};
