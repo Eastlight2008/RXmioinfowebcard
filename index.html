@@ -628,14 +628,20 @@
         let html = '';
         for (const s of servers) {
             const isOff   = s.round_phase === '空闲' || s.round_phase === '重启/离线中';
-            const pc      = isOff ? 'offline' : phaseClass(s.round_phase);
-            const bc      = isOff ? 'badge-offline' : phaseBadgeClass(s.round_phase);
-            const phaseText = isOff ? '离线/重启中' : s.round_phase;
+            const isFinale = s.round_phase === '回合中' && s.round_time_left === 0;
+            let pc      = isOff ? 'offline' : phaseClass(s.round_phase);
+            let bc      = isOff ? 'badge-offline' : phaseBadgeClass(s.round_phase);
+            let phaseText = isOff ? '离线/重启中' : s.round_phase;
+            if (isFinale) {
+                pc = 'nuke';
+                bc = 'badge-nuke';
+                phaseText = '终局事件';
+            }
             const playersText = (s.players != null) ? `${s.players}/${s.max_players}` : '…';
             const playersCls  = (s.players != null) ? 'a2s-value' : 'a2s-value a2s-loading';
             let roundTimeText = formatDuration(s.round_time_left);
             if (s.round_phase === '回合中' && s.round_time_left === 0) {
-                roundTimeText = 'GOC开核中/COTSK开导中';
+                roundTimeText = '开核/开祷中';
             }
 
             html += `
