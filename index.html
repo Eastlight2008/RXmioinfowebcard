@@ -613,9 +613,10 @@
 
         // Status bar
         const total    = servers.length;
+        const idleServer = s => s.round_phase === '空闲' && s.rounds_left === -1 && s.round_time_left === -1 && (s.players == null || s.players < 1);
         const waitingServer = s => s.round_phase === '空闲' && s.rounds_left === 0 && s.round_time_left === -1 && s.players >= 1;
-        const running  = servers.filter(s => (s.round_phase !== '空闲' && s.round_phase !== '重启/离线中') || waitingServer(s)).length;
-        const offline  = servers.filter(s => (s.round_phase === '空闲' || s.round_phase === '重启/离线中') && !waitingServer(s)).length;
+        const running  = servers.filter(s => (s.round_phase !== '空闲' && s.round_phase !== '重启/离线中') || waitingServer(s) || idleServer(s)).length;
+        const offline  = servers.filter(s => s.round_phase === '重启/离线中').length;
 
         $statusBar.style.display = '';
         $statusBar.innerHTML = `
@@ -628,16 +629,22 @@
         // Cards
         let html = '';
         for (const s of servers) {
-            const isOff   = s.round_phase === '空闲' || s.round_phase === '重启/离线中';
+            const isOff   = s.round_phase === '重启/离线中';
+            const isIdle  = s.round_phase === '空闲' && s.rounds_left === -1 && s.round_time_left === -1 && (s.players == null || s.players < 1);
             const isFinale = s.round_phase === '回合中' && s.round_time_left === 0;
             const isWaiting = s.round_phase === '空闲' && s.rounds_left === 0 && s.round_time_left === -1 && s.players >= 1;
             let pc      = isOff ? 'offline' : phaseClass(s.round_phase);
             let bc      = isOff ? 'badge-offline' : phaseBadgeClass(s.round_phase);
-            let phaseText = isOff ? '离线/重启中' : s.round_phase;
+            let phaseText = isOff ? '重启/离线' : s.round_phase;
             if (isFinale) {
                 pc = 'nuke';
                 bc = 'badge-nuke';
                 phaseText = '终局事件';
+            }
+            if (isIdle) {
+                pc = 'idle';
+                bc = 'badge-idle';
+                phaseText = '空闲';
             }
             if (isWaiting) {
                 pc = 'idle';
